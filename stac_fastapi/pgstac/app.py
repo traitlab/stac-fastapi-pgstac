@@ -7,18 +7,27 @@ If the variable is not set, enables all extensions.
 
 import os
 
+from brotli_asgi import BrotliMiddleware
 from fastapi.responses import ORJSONResponse
 from stac_fastapi.api.app import StacApi
-from stac_fastapi.api.models import create_get_request_model, create_post_request_model
+from stac_fastapi.api.middleware import CORSMiddleware, ProxyHeaderMiddleware
+from stac_fastapi.api.models import (
+    EmptyRequest,
+    ItemCollectionUri,
+    create_get_request_model,
+    create_post_request_model,
+    create_request_model,
+)
 from stac_fastapi.extensions.core import (
-    ContextExtension,
     FieldsExtension,
     FilterExtension,
     SortExtension,
     TokenPaginationExtension,
     TransactionExtension,
 )
+from stac_fastapi.extensions.core.collection_search import CollectionSearchExtension
 from stac_fastapi.extensions.third_party import BulkTransactionExtension
+from starlette.middleware import Middleware
 
 from stac_fastapi.pgstac.config import Settings
 from stac_fastapi.pgstac.core import CoreCrudClient
@@ -39,28 +48,77 @@ extensions_map = {
     "sort": SortExtension(),
     "fields": FieldsExtension(),
     "pagination": TokenPaginationExtension(),
-    "context": ContextExtension(),
     "filter": FilterExtension(client=FiltersClient()),
     "bulk_transactions": BulkTransactionExtension(client=BulkTransactionsClient()),
 }
 
-if enabled_extensions := os.getenv("ENABLED_EXTENSIONS"):
-    extensions = [
-        extensions_map[extension_name]
-        for extension_name in enabled_extensions.split(",")
-    ]
-else:
-    extensions = list(extensions_map.values())
+# some extensions are supported in combination with the collection search extension
+collection_extensions_map = {
+    "query": QueryExtension(),
+    "sort": SortExtension(),
+    "fields": FieldsExtension(),
+    "filter": FilterExtension(client=FiltersClient()),
+}
+
+enabled_extensions = (
+    os.environ["ENABLED_EXTENSIONS"].split(",")
+    if "ENABLED_EXTENSIONS" in os.environ
+    else list(extensions_map.keys()) + ["collection_search"]
+)
+extensions = [
+    extension for key, extension in extensions_map.items() if key in enabled_extensions
+]
+
+items_get_request_model = (
+    create_request_model(
+        model_name="ItemCollectionUri",
+        base_model=ItemCollectionUri,
+        mixins=[TokenPaginationExtension().GET],
+        request_type="GET",
+    )
+    if any(isinstance(ext, TokenPaginationExtension) for ext in extensions)
+    else ItemCollectionUri
+)
+
+collection_search_extension = (
+    CollectionSearchExtension.from_extensions(
+        [
+            extension
+            for key, extension in collection_extensions_map.items()
+            if key in enabled_extensions
+        ]
+    )
+    if "collection_search" in enabled_extensions
+    else None
+)
+
+collections_get_request_model = (
+    collection_search_extension.GET if collection_search_extension else EmptyRequest
+)
 
 post_request_model = create_post_request_model(extensions, base_model=PgstacSearch)
+get_request_model = create_get_request_model(extensions)
 
 api = StacApi(
     settings=settings,
-    extensions=extensions,
-    client=CoreCrudClient(post_request_model=post_request_model),
+    extensions=extensions + [collection_search_extension]
+    if collection_search_extension
+    else extensions,
+    client=CoreCrudClient(post_request_model=post_request_model),  # type: ignore
     response_class=ORJSONResponse,
-    search_get_request_model=create_get_request_model(extensions),
+    items_get_request_model=items_get_request_model,
+    search_get_request_model=get_request_model,
     search_post_request_model=post_request_model,
+    collections_get_request_model=collections_get_request_model,
+    middlewares=[
+        Middleware(BrotliMiddleware),
+        Middleware(ProxyHeaderMiddleware),
+        Middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=settings.cors_methods,
+        ),
+    ],
     description="""This catalog stores all drone products from LEFO ([https://lefo.ca](https://lefo.ca)) and close collaborators.
 
 Each STAC collection corresponds to a single drone mission. All missions and metadata are findable, but most products are private and require password access.
@@ -68,7 +126,7 @@ Each STAC collection corresponds to a single drone mission. All missions and met
 The catalog can be accessed via the QGIS STAC Browser plugin with this link: [http://206.12.102.82/stac-fastapi-pgstac/api/v1/pgstac/#/](http://206.12.102.82/stac-fastapi-pgstac/api/v1/pgstac/#/)
 
 Please contact us ([info@lefo.ca](mailto:info@lefo.ca)) for any questions and data access requests.""",
-    title="LEFO STAC Collections"    
+    title="LEFO STAC Collections",    
 )
 app = api.app
 
@@ -98,8 +156,8 @@ def run():
             reload=settings.reload,
             root_path=os.getenv("UVICORN_ROOT_PATH", ""),
         )
-    except ImportError:
-        raise RuntimeError("Uvicorn must be installed in order to use command")
+    except ImportError as e:
+        raise RuntimeError("Uvicorn must be installed in order to use command") from e
 
 
 if __name__ == "__main__":

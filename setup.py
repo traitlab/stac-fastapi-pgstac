@@ -8,25 +8,26 @@ with open("README.md") as f:
 install_requires = [
     "attrs",
     "orjson",
-    "pydantic[dotenv]>=1.10.8",  # https://github.com/pydantic/pydantic/issues/5821
-    "stac_pydantic==2.0.*",
-    "stac-fastapi.types~=2.4.8",
-    "stac-fastapi.api~=2.4.8",
-    "stac-fastapi.extensions~=2.4.8",
+    "pydantic",
+    "stac_pydantic==3.1.*",
+    "stac-fastapi.api~=3.0.2",
+    "stac-fastapi.extensions~=3.0.2",
+    "stac-fastapi.types~=3.0.2",
     "asyncpg",
     "buildpg",
     "brotli_asgi",
     "pygeofilter>=0.2",
-    "pypgstac==0.7.*",
+    "pypgstac>=0.8,<0.10",
 ]
 
 extra_reqs = {
     "dev": [
         "pystac[validation]",
-        "pypgstac[psycopg]==0.7.*",
+        "pypgstac[psycopg]==0.9.*",
+        "pytest-postgresql",
         "pytest",
         "pytest-cov",
-        "pytest-asyncio>=0.17",
+        "pytest-asyncio>=0.17,<0.25.0",
         "pre-commit",
         "requests",
         "shapely",
@@ -35,7 +36,7 @@ extra_reqs = {
         "wheel",
     ],
     "docs": ["mkdocs", "mkdocs-material", "pdocs"],
-    "server": ["uvicorn[standard]==0.19.0"],
+    "server": ["uvicorn[standard]==0.32.0"],
     "awslambda": ["mangum"],
 }
 
@@ -63,7 +64,5 @@ setup(
     install_requires=install_requires,
     tests_require=extra_reqs["dev"],
     extras_require=extra_reqs,
-    entry_points={
-        "console_scripts": ["stac-fastapi-pgstac=stac_fastapi.pgstac.app:run"]
-    },
+    entry_points={"console_scripts": ["stac-fastapi-pgstac=stac_fastapi.pgstac.app:run"]},
 )

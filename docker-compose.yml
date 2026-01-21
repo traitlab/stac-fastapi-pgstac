@@ -1,9 +1,7 @@
-version: '3'
 services:
   app:
     container_name: stac-fastapi-pgstac
     image: stac-utils/stac-fastapi-pgstac
-    platform: linux/amd64
     build: .
     environment:
       - APP_HOST=0.0.0.0
@@ -32,9 +30,22 @@ services:
       - database
     command: bash -c "./scripts/wait-for-it.sh database:5432 && python -m stac_fastapi.pgstac.app"
 
+  tests:
+    container_name: stac-fastapi-pgstac-test
+    image: stac-utils/stac-fastapi-pgstac-test
+    build:
+      context: .
+      dockerfile: Dockerfile.tests
+    environment:
+      - ENVIRONMENT=local
+      - DB_MIN_CONN_SIZE=1
+      - DB_MAX_CONN_SIZE=1
+      - USE_API_HYDRATE=${USE_API_HYDRATE:-false}
+    command: bash -c "python -m pytest -s -vv"
+
   database:
     container_name: stac-db
-    image: ghcr.io/stac-utils/pgstac:v0.7.9
+    image: ghcr.io/stac-utils/pgstac:v0.9.1
     environment:
       - POSTGRES_USER=username
       - POSTGRES_PASSWORD=password
@@ -54,15 +65,12 @@ services:
     volumes:
       - ./stac_fastapi:/app/stac_fastapi
       - ./scripts:/app/scripts
-    command:
-      - "./scripts/wait-for-it.sh"
-      - "-t"
-      - "120"
-      - "app:8082"
-      - "--"
-      - "python"
-      - "/app/scripts/ingest_joplin.py"
-      - "http://app:8082"
+    command: >
+      /bin/sh -c "
+        ./scripts/wait-for-it.sh -t 60 app:8082 &&
+        python -m pip install requests &&
+        python /app/scripts/ingest_joplin.py http://app:8082
+        "
     depends_on:
       - database
       - app
