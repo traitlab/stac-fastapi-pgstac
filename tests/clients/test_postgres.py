@@ -6,8 +6,10 @@ from typing import Callable, Literal
 
 import pytest
 from fastapi import Request
+from pydantic import ValidationError
 from stac_pydantic import Collection, Item
 
+from stac_fastapi.pgstac.config import PostgresSettings
 from stac_fastapi.pgstac.db import close_db_connection, connect_to_db, get_connection
 
 # from tests.conftest import MockStarletteRequest
@@ -148,6 +150,20 @@ async def test_create_item_bad_body(
         json=item,
     )
     assert resp.status_code == 400
+
+
+async def test_create_item_no_geometry(
+    app_client, load_test_data: Callable, load_test_collection
+):
+    """Items with missing or null Geometry should return an error"""
+    coll = load_test_collection
+
+    item = load_test_data("test_item.json")
+    _ = item.pop("bbox")
+    item["geometry"] = None
+    resp = await app_client.post(f"/collections/{coll['id']}/items", json=item)
+    assert resp.status_code == 400
+    assert "Geometry is required in pgstac." in resp.json()["detail"]
 
 
 async def test_update_item(app_client, load_test_collection, load_test_item):
@@ -523,6 +539,27 @@ async def test_create_bulk_items_id_mismatch(
 #         assert item.collection == coll.id
 
 
+async def test_db_setup_works_with_env_vars(api_client, pgstac, monkeypatch):
+    """Test that the application starts successfully if the POSTGRES_* environment variables are set"""
+    monkeypatch.setenv("PGUSER", pgstac.user)
+    monkeypatch.setenv("PGPASSWORD", pgstac.password)
+    monkeypatch.setenv("PGHOST", pgstac.host)
+    monkeypatch.setenv("PGPORT", str(pgstac.port))
+    monkeypatch.setenv("PGDATABASE", pgstac.dbname)
+
+    await connect_to_db(api_client.app)
+    await close_db_connection(api_client.app)
+
+
+async def test_db_setup_fails_without_env_vars(api_client):
+    """Test that the application fails to start if database environment variables are not set."""
+    try:
+        await connect_to_db(api_client.app)
+    except ValidationError:
+        await close_db_connection(api_client.app)
+        pytest.raises(ValidationError)
+
+
 @asynccontextmanager
 async def custom_get_connection(
     request: Request,
@@ -536,12 +573,20 @@ async def custom_get_connection(
 
 class TestDbConnect:
     @pytest.fixture
-    async def app(self, api_client):
+    async def app(self, api_client, pgstac):
         """
         app fixture override to setup app with a customized db connection getter
         """
+        postgres_settings = PostgresSettings(
+            pguser=pgstac.user,
+            pgpassword=pgstac.password,
+            pghost=pgstac.host,
+            pgport=pgstac.port,
+            pgdatabase=pgstac.dbname,
+        )
+
         logger.debug("Customizing app setup")
-        await connect_to_db(api_client.app, custom_get_connection)
+        await connect_to_db(api_client.app, custom_get_connection, postgres_settings)
         yield api_client.app
         await close_db_connection(api_client.app)
 

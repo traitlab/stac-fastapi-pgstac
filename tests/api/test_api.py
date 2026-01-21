@@ -7,8 +7,6 @@ import orjson
 import pytest
 from fastapi import Request
 from httpx import ASGITransport, AsyncClient
-from pypgstac.db import PgstacDB
-from pypgstac.load import Loader
 from pystac import Collection, Extent, Item, SpatialExtent, TemporalExtent
 from stac_fastapi.api.app import StacApi
 from stac_fastapi.api.models import create_get_request_model, create_post_request_model
@@ -17,8 +15,10 @@ from stac_fastapi.extensions.core import (
     FieldsExtension,
     TransactionExtension,
 )
+from stac_fastapi.extensions.core.fields import FieldsConformanceClasses
 from stac_fastapi.types import stac as stac_types
 
+from stac_fastapi.pgstac.config import PostgresSettings
 from stac_fastapi.pgstac.core import CoreCrudClient, Settings
 from stac_fastapi.pgstac.db import close_db_connection, connect_to_db
 from stac_fastapi.pgstac.transactions import TransactionsClient
@@ -66,6 +66,19 @@ DEFAULT_EXTENT = Extent(
 )
 
 
+async def test_default_app_no_transactions(
+    app_client_no_transaction, load_test_data, load_test_collection
+):
+    coll = load_test_collection
+    item = load_test_data("test_item.json")
+    resp = await app_client_no_transaction.post(
+        f"/collections/{coll['id']}/items", json=item
+    )
+
+    # the default application does not have the transaction extensions enabled!
+    assert resp.status_code == 405
+
+
 async def test_post_search_content_type(app_client):
     params = {"limit": 1}
     resp = await app_client.post("search", json=params)
@@ -81,15 +94,19 @@ async def test_landing_links(app_client):
     """test landing page links."""
     landing = await app_client.get("/")
     assert landing.status_code == 200, landing.text
-    assert "Queryables" in [link.get("title") for link in landing.json()["links"]]
+    assert "Queryables available for this Catalog" in [
+        link.get("title") for link in landing.json()["links"]
+    ]
 
 
 async def test_get_queryables_content_type(app_client, load_test_collection):
     resp = await app_client.get("queryables")
+    assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/schema+json"
 
     coll = load_test_collection
     resp = await app_client.get(f"collections/{coll['id']}/queryables")
+    assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/schema+json"
 
 
@@ -252,6 +269,47 @@ async def test_app_query_extension_gte(load_test_data, app_client, load_test_col
     assert resp.status_code == 200
     resp_json = resp.json()
     assert len(resp_json["features"]) == 1
+
+
+async def test_app_collection_fields_extension(
+    load_test_data, app_client, load_test_collection, app
+):
+    fields = ["title"]
+    resp = await app_client.get("/collections", params={"fields": ",".join(fields)})
+
+    assert resp.status_code == 200
+
+    resp_json = resp.json()
+    resp_collections = resp_json["collections"]
+
+    assert len(resp_collections) > 0
+    # NOTE: It's a bug that 'collection' is always included; see #327
+    constant_fields = ["id", "links", "collection"]
+    for collection in resp_collections:
+        assert set(collection.keys()) == set(fields + constant_fields)
+
+
+async def test_app_item_fields_extension(
+    load_test_data, app_client, load_test_collection, load_test_item, app
+):
+    coll = load_test_collection
+    fields = ["id", "geometry"]
+    resp = await app_client.get(
+        f"/collections/{coll['id']}/items", params={"fields": ",".join(fields)}
+    )
+
+    assert resp.status_code == 200
+
+    resp_json = resp.json()
+    features = resp_json["features"]
+
+    assert len(features) > 0
+    # These fields are always included in items
+    constant_fields = ["id", "links"]
+    if not app.state.settings.use_api_hydrate:
+        constant_fields.append("collection")
+    for item in features:
+        assert set(item.keys()) == set(fields + constant_fields)
 
 
 async def test_app_sort_extension(load_test_data, app_client, load_test_collection):
@@ -487,6 +545,7 @@ async def test_search_duplicate_forward_headers(
 @pytest.mark.asyncio
 async def test_base_queryables(load_test_data, app_client, load_test_collection):
     resp = await app_client.get("/queryables")
+    assert resp.status_code == 200
     assert resp.headers["Content-Type"] == "application/schema+json"
     q = resp.json()
     assert q["$id"].endswith("/queryables")
@@ -498,6 +557,7 @@ async def test_base_queryables(load_test_data, app_client, load_test_collection)
 @pytest.mark.asyncio
 async def test_collection_queryables(load_test_data, app_client, load_test_collection):
     resp = await app_client.get("/collections/test-collection/queryables")
+    assert resp.status_code == 200
     assert resp.headers["Content-Type"] == "application/schema+json"
     q = resp.json()
     assert q["$id"].endswith("/collections/test-collection/queryables")
@@ -680,7 +740,7 @@ async def test_sorting_and_paging(app_client, load_test_collection, direction: s
 
 
 @pytest.mark.asyncio
-async def test_wrapped_function(load_test_data, database) -> None:
+async def test_wrapped_function(load_test_data, pgstac) -> None:
     # Ensure wrappers, e.g. Planetary Computer's rate limiting, work.
     # https://github.com/gadomski/planetary-computer-apis/blob/2719ccf6ead3e06de0784c39a2918d4d1811368b/pccommon/pccommon/redis.py#L205-L238
 
@@ -715,13 +775,15 @@ async def test_wrapped_function(load_test_data, database) -> None:
             return await super().get_collection(collection_id, request=request, **kwargs)
 
     settings = Settings(
-        postgres_user=database.user,
-        postgres_pass=database.password,
-        postgres_host_reader=database.host,
-        postgres_host_writer=database.host,
-        postgres_port=database.port,
-        postgres_dbname=database.dbname,
         testing=True,
+    )
+
+    postgres_settings = PostgresSettings(
+        pguser=pgstac.user,
+        pgpassword=pgstac.password,
+        pghost=pgstac.host,
+        pgport=pgstac.port,
+        pgdatabase=pgstac.dbname,
     )
 
     extensions = [
@@ -733,12 +795,12 @@ async def test_wrapped_function(load_test_data, database) -> None:
 
     collection_search_extension = CollectionSearchExtension.from_extensions(
         extensions=[
-            FieldsExtension(),
+            FieldsExtension(conformance_classes=[FieldsConformanceClasses.COLLECTIONS]),
         ]
     )
 
     api = StacApi(
-        client=Client(post_request_model=post_request_model),
+        client=Client(pgstac_search_model=post_request_model),
         settings=settings,
         extensions=extensions,
         search_post_request_model=post_request_model,
@@ -746,7 +808,11 @@ async def test_wrapped_function(load_test_data, database) -> None:
         collections_get_request_model=collection_search_extension.GET,
     )
     app = api.app
-    await connect_to_db(app)
+    await connect_to_db(
+        app,
+        postgres_settings=postgres_settings,
+        add_write_connection_pool=True,
+    )
     try:
         async with AsyncClient(transport=ASGITransport(app=app)) as client:
             response = await client.post(
@@ -770,39 +836,49 @@ async def test_wrapped_function(load_test_data, database) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("validation", [True, False])
 @pytest.mark.parametrize("hydrate", [True, False])
-async def test_no_extension(
-    hydrate, validation, load_test_data, database, pgstac
-) -> None:
+async def test_no_extension(hydrate, validation, load_test_data, pgstac) -> None:
     """test PgSTAC with no extension."""
-    connection = f"postgresql://{database.user}:{quote_plus(database.password)}@{database.host}:{database.port}/{database.dbname}"
-    with PgstacDB(dsn=connection) as db:
-        loader = Loader(db=db)
-        loader.load_collections(os.path.join(DATA_DIR, "test_collection.json"))
-        loader.load_items(os.path.join(DATA_DIR, "test_item.json"))
-
     settings = Settings(
-        postgres_user=database.user,
-        postgres_pass=database.password,
-        postgres_host_reader=database.host,
-        postgres_host_writer=database.host,
-        postgres_port=database.port,
-        postgres_dbname=database.dbname,
         testing=True,
         use_api_hydrate=hydrate,
         enable_response_models=validation,
     )
-    extensions = []
+    postgres_settings = PostgresSettings(
+        pguser=pgstac.user,
+        pgpassword=pgstac.password,
+        pghost=pgstac.host,
+        pgport=pgstac.port,
+        pgdatabase=pgstac.dbname,
+    )
+    extensions = [
+        TransactionExtension(client=TransactionsClient(), settings=settings),
+    ]
     post_request_model = create_post_request_model(extensions, base_model=PgstacSearch)
     api = StacApi(
-        client=CoreCrudClient(post_request_model=post_request_model),
+        client=CoreCrudClient(pgstac_search_model=post_request_model),
         settings=settings,
         extensions=extensions,
         search_post_request_model=post_request_model,
     )
     app = api.app
-    await connect_to_db(app)
+    await connect_to_db(
+        app,
+        postgres_settings=postgres_settings,
+        add_write_connection_pool=True,
+    )
     try:
         async with AsyncClient(transport=ASGITransport(app=app)) as client:
+            response = await client.post(
+                "http://test/collections",
+                json=load_test_data("test_collection.json"),
+            )
+            assert response.status_code == 201
+            response = await client.post(
+                "http://test/collections/test-collection/items",
+                json=load_test_data("test_item.json"),
+            )
+            assert response.status_code == 201
+
             landing = await client.get("http://test/")
             assert landing.status_code == 200, landing.text
             assert "Queryables" not in [
@@ -879,3 +955,76 @@ async def test_no_extension(
 
     finally:
         await close_db_connection(app)
+
+
+async def test_default_app(default_client, default_app, load_test_data):
+    api_routes = {
+        f"{list(route.methods)[0]} {route.path}" for route in default_app.routes
+    }
+    assert set(STAC_CORE_ROUTES).issubset(api_routes)
+    assert set(STAC_TRANSACTION_ROUTES).issubset(api_routes)
+
+    # Load collections
+    col = load_test_data("test_collection.json")
+    resp = await default_client.post("/collections", json=col)
+    assert resp.status_code == 201
+
+    # Load items
+    item = load_test_data("test_item.json")
+    resp = await default_client.post(f"/collections/{col['id']}/items", json=item)
+    assert resp.status_code == 201
+
+    resp = await default_client.get("/conformance")
+    assert resp.status_code == 200
+    conf = resp.json()["conformsTo"]
+    assert (
+        "https://api.stacspec.org/v1.0.0/ogcapi-features/extensions/transaction" in conf
+    )
+    assert "https://api.stacspec.org/v1.0.0/collections/extensions/transaction" in conf
+    assert "http://www.opengis.net/spec/cql2/1.0/conf/basic-cql2" in conf
+    assert "http://www.opengis.net/spec/ogcapi-common-2/1.0/conf/simple-query" in conf
+    assert "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core" in conf
+    assert (
+        "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/features-filter" in conf
+    )
+    assert "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/filter" in conf
+    assert "https://api.stacspec.org/v1.0.0-rc.1/collection-search" in conf
+    assert "https://api.stacspec.org/v1.0.0/collections" in conf
+    assert "https://api.stacspec.org/v1.0.0/ogcapi-features#query" in conf
+    assert "https://api.stacspec.org/v1.0.0/ogcapi-features#sort" in conf
+
+
+async def test_app_transactions_validate_extension(
+    app_client_validate_ext, load_test_data
+):
+    coll = load_test_data("test_collection.json")
+    # Add attribution extension
+    # https://github.com/stac-extensions/attribution
+    coll["stac_extensions"] = [
+        "https://stac-extensions.github.io/attribution/v0.1.0/schema.json",
+    ]
+
+    resp = await app_client_validate_ext.post("/collections", json=coll)
+    assert resp.status_code == 422
+    assert "STAC Extensions failed validation:" in resp.json()["detail"]
+
+    # add attribution
+    coll["attribution"] = "something"
+    resp = await app_client_validate_ext.post("/collections", json=coll)
+    assert resp.status_code == 201
+
+    item = load_test_data("test_item.json")
+    item["stac_extensions"].append(
+        "https://stac-extensions.github.io/attribution/v0.1.0/schema.json",
+    )
+    resp = await app_client_validate_ext.post(
+        f"/collections/{coll['id']}/items", json=item
+    )
+    assert resp.status_code == 422
+    assert "STAC Extensions failed validation:" in resp.json()["detail"]
+
+    item["properties"]["attribution"] = "something"
+    resp = await app_client_validate_ext.post(
+        f"/collections/{coll['id']}/items", json=item
+    )
+    assert resp.status_code == 201

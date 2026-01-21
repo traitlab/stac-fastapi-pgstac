@@ -109,11 +109,50 @@ async def test_update_new_collection(app_client, load_test_collection):
     assert resp.status_code == 404
 
 
+async def test_patch_collection_partialcollection(
+    app_client, load_test_collection: Collection
+):
+    """Test patching a collection with a PartialCollection."""
+    partial = {
+        "id": load_test_collection["id"],
+        "description": "Patched description",
+    }
+
+    resp = await app_client.patch(f"/collections/{partial['id']}", json=partial)
+    assert resp.status_code == 200
+
+    resp = await app_client.get(f"/collections/{partial['id']}")
+    assert resp.status_code == 200
+
+    get_coll = Collection.model_validate(resp.json())
+
+    assert get_coll.description == "Patched description"
+
+
+async def test_patch_collection_operations(app_client, load_test_collection: Collection):
+    """Test patching a collection with PatchOperations ."""
+    operations = [
+        {"op": "replace", "path": "/description", "value": "Patched description"}
+    ]
+
+    resp = await app_client.patch(
+        f"/collections/{load_test_collection['id']}", json=operations
+    )
+    assert resp.status_code == 200
+
+    resp = await app_client.get(f"/collections/{load_test_collection['id']}")
+    assert resp.status_code == 200
+
+    get_coll = Collection.model_validate(resp.json())
+    assert get_coll.description == "Patched description"
+
+
 async def test_nocollections(
     app_client,
 ):
     resp = await app_client.get("/collections")
     assert resp.status_code == 200
+    assert resp.json()["numberReturned"] == 0
 
 
 async def test_returns_valid_collection(app_client, load_test_data):
@@ -166,6 +205,9 @@ async def test_returns_valid_links_in_collections(app_client, load_test_data):
     resp = await app_client.get("/collections")
     assert resp.status_code == 200
     resp_json = resp.json()
+    assert resp.json()["numberReturned"]
+    assert resp.json()["numberMatched"]
+
     collections = resp_json["collections"]
     # Find collection in list by ID
     single_coll = next(coll for coll in collections if coll["id"] == in_json["id"])
@@ -303,3 +345,322 @@ async def test_get_collections_search(
         "/collections",
     )
     assert len(resp.json()["collections"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_collection_search_freetext(
+    app_client, load_test_collection, load_test2_collection
+):
+    res = await app_client.get("/_mgmt/health")
+    pgstac_version = res.json()["pgstac"]["pgstac_version"]
+    if tuple(map(int, pgstac_version.split("."))) < (0, 9, 2):
+        pytest.skip("Need PgSTAC > 0.9.2")
+
+    # free-text
+    resp = await app_client.get(
+        "/collections",
+        params={"q": "temperature"},
+    )
+    assert resp.json()["numberReturned"] == 1
+    assert resp.json()["numberMatched"] == 1
+    assert len(resp.json()["collections"]) == 1
+    assert resp.json()["collections"][0]["id"] == load_test2_collection.id
+
+    resp = await app_client.get(
+        "/collections",
+        params={"q": "temperature,calibrated"},
+    )
+    assert resp.json()["numberReturned"] == 2
+    assert resp.json()["numberMatched"] == 2
+    assert len(resp.json()["collections"]) == 2
+
+    resp = await app_client.get(
+        "/collections",
+        params={"q": "temperature,yo"},
+    )
+    assert resp.json()["numberReturned"] == 1
+    assert resp.json()["numberMatched"] == 1
+    assert len(resp.json()["collections"]) == 1
+    assert resp.json()["collections"][0]["id"] == load_test2_collection.id
+
+    resp = await app_client.get(
+        "/collections",
+        params={"q": "nosuchthing"},
+    )
+    assert len(resp.json()["collections"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_collection_search_freetext_advanced(
+    app_client_advanced_freetext, load_test_collection, load_test2_collection
+):
+    res = await app_client_advanced_freetext.get("/_mgmt/health")
+    pgstac_version = res.json()["pgstac"]["pgstac_version"]
+    if tuple(map(int, pgstac_version.split("."))) < (0, 9, 2):
+        pytest.skip("Need PgSTAC > 0.9.2")
+
+    # free-text
+    resp = await app_client_advanced_freetext.get(
+        "/collections",
+        params={"q": "temperature"},
+    )
+    assert resp.json()["numberReturned"] == 1
+    assert resp.json()["numberMatched"] == 1
+    assert len(resp.json()["collections"]) == 1
+    assert resp.json()["collections"][0]["id"] == load_test2_collection.id
+
+    resp = await app_client_advanced_freetext.get(
+        "/collections",
+        params={"q": "temperature,calibrated"},
+    )
+    assert resp.json()["numberReturned"] == 2
+    assert resp.json()["numberMatched"] == 2
+    assert len(resp.json()["collections"]) == 2
+
+    resp = await app_client_advanced_freetext.get(
+        "/collections",
+        params={"q": "temperature,yo"},
+    )
+    assert resp.json()["numberReturned"] == 1
+    assert resp.json()["numberMatched"] == 1
+    assert len(resp.json()["collections"]) == 1
+    assert resp.json()["collections"][0]["id"] == load_test2_collection.id
+
+    resp = await app_client_advanced_freetext.get(
+        "/collections",
+        params={"q": "temperature OR yo"},
+    )
+    assert resp.json()["numberReturned"] == 1
+    assert resp.json()["numberMatched"] == 1
+    assert len(resp.json()["collections"]) == 1
+    assert resp.json()["collections"][0]["id"] == load_test2_collection.id
+
+    resp = await app_client_advanced_freetext.get(
+        "/collections",
+        params={"q": "nosuchthing"},
+    )
+    assert len(resp.json()["collections"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_all_collections_with_pagination(app_client, load_test_data):
+    res = await app_client.get("/_mgmt/health")
+    pgstac_version = res.json()["pgstac"]["pgstac_version"]
+    if tuple(map(int, pgstac_version.split("."))) < (0, 9, 2):
+        pytest.skip("Need PgSTAC > 0.9.2")
+
+    data = load_test_data("test_collection.json")
+    collection_id = data["id"]
+    for ii in range(0, 12):
+        data["id"] = collection_id + f"_{ii}"
+        resp = await app_client.post(
+            "/collections",
+            json=data,
+        )
+        assert resp.status_code == 201
+
+    resp = await app_client.get("/collections")
+    assert resp.json()["numberReturned"] == 10
+    assert resp.json()["numberMatched"] == 12
+    cols = resp.json()["collections"]
+    assert len(cols) == 10
+    links = resp.json()["links"]
+    assert len(links) == 3
+    assert {"root", "self", "next"} == {link["rel"] for link in links}
+
+    resp = await app_client.get("/collections", params={"limit": 12})
+    assert resp.json()["numberReturned"] == 12
+    assert resp.json()["numberMatched"] == 12
+    cols = resp.json()["collections"]
+    assert len(cols) == 12
+    links = resp.json()["links"]
+    assert len(links) == 2
+    assert {"root", "self"} == {link["rel"] for link in links}
+
+
+@pytest.mark.asyncio
+async def test_all_collections_without_pagination(app_client_no_ext, load_test_data):
+    res = await app_client_no_ext.get("/_mgmt/health")
+    pgstac_version = res.json()["pgstac"]["pgstac_version"]
+    if tuple(map(int, pgstac_version.split("."))) < (0, 9, 2):
+        pytest.skip("Need PgSTAC > 0.9.2")
+
+    data = load_test_data("test_collection.json")
+    collection_id = data["id"]
+    for ii in range(0, 12):
+        data["id"] = collection_id + f"_{ii}"
+        resp = await app_client_no_ext.post(
+            "/collections",
+            json=data,
+        )
+        assert resp.status_code == 201
+
+    resp = await app_client_no_ext.get("/collections")
+    assert resp.json()["numberReturned"] == 12
+    assert resp.json()["numberMatched"] == 12
+    cols = resp.json()["collections"]
+    assert len(cols) == 12
+    links = resp.json()["links"]
+    assert len(links) == 2
+    assert {"root", "self"} == {link["rel"] for link in links}
+
+
+@pytest.mark.asyncio
+async def test_get_collections_search_pagination(
+    app_client, load_test_collection, load_test2_collection
+):
+    res = await app_client.get("/_mgmt/health")
+    pgstac_version = res.json()["pgstac"]["pgstac_version"]
+    if tuple(map(int, pgstac_version.split("."))) < (0, 9, 2):
+        pytest.skip("Need PgSTAC > 0.9.2")
+
+    resp = await app_client.get("/collections")
+    assert resp.json()["numberReturned"] == 2
+    assert resp.json()["numberMatched"] == 2
+    cols = resp.json()["collections"]
+    assert len(cols) == 2
+    links = resp.json()["links"]
+    assert len(links) == 2
+    assert {"root", "self"} == {link["rel"] for link in links}
+
+    ###################
+    # limit should be positive
+    resp = await app_client.get("/collections", params={"limit": 0})
+    assert resp.status_code == 400
+
+    ###################
+    # limit=1, should have a `next` link
+    resp = await app_client.get(
+        "/collections",
+        params={"limit": 1},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 1
+    assert cols[0]["id"] == load_test_collection["id"]
+    assert len(links) == 3
+    assert {"root", "self", "next"} == {link["rel"] for link in links}
+    next_link = list(filter(lambda link: link["rel"] == "next", links))[0]
+    assert next_link["href"].endswith("?limit=1&offset=1")
+
+    ###################
+    # limit=2, there should not be a next link
+    resp = await app_client.get(
+        "/collections",
+        params={"limit": 2},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 2
+    assert cols[0]["id"] == load_test_collection["id"]
+    assert cols[1]["id"] == load_test2_collection.id
+    assert len(links) == 2
+    assert {"root", "self"} == {link["rel"] for link in links}
+
+    ###################
+    # limit=3, there should not be a next/previous link
+    resp = await app_client.get(
+        "/collections",
+        params={"limit": 3},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 2
+    assert cols[0]["id"] == load_test_collection["id"]
+    assert cols[1]["id"] == load_test2_collection.id
+    assert len(links) == 2
+    assert {"root", "self"} == {link["rel"] for link in links}
+
+    ###################
+    # offset=3, because there are 2 collections, we should not have `next` or `prev` links
+    resp = await app_client.get(
+        "/collections",
+        params={"offset": 3},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 0
+    assert len(links) == 2
+    assert {"root", "self"} == {link["rel"] for link in links}
+
+    ###################
+    # offset=3,limit=1
+    resp = await app_client.get(
+        "/collections",
+        params={"limit": 1, "offset": 3},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 0
+    assert len(links) == 3
+    assert {"root", "self", "previous"} == {link["rel"] for link in links}
+    prev_link = list(filter(lambda link: link["rel"] == "previous", links))[0]
+    assert prev_link["href"].endswith("?limit=1&offset=2")
+
+    ###################
+    # limit=2, offset=3, there should not be a next link
+    resp = await app_client.get(
+        "/collections",
+        params={"limit": 2, "offset": 3},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 0
+    assert len(links) == 3
+    assert {"root", "self", "previous"} == {link["rel"] for link in links}
+    prev_link = list(filter(lambda link: link["rel"] == "previous", links))[0]
+    assert prev_link["href"].endswith("?limit=2&offset=1")
+
+    ###################
+    # offset=1,limit=1 should have a `previous` link
+    resp = await app_client.get(
+        "/collections",
+        params={"offset": 1, "limit": 1},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 1
+    assert cols[0]["id"] == load_test2_collection.id
+    assert len(links) == 3
+    assert {"root", "self", "previous"} == {link["rel"] for link in links}
+    prev_link = list(filter(lambda link: link["rel"] == "previous", links))[0]
+    assert "offset" in prev_link["href"]
+
+    ###################
+    # offset=0, should not have next/previous link
+    resp = await app_client.get(
+        "/collections",
+        params={"offset": 0},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 2
+    assert len(links) == 2
+    assert {"root", "self"} == {link["rel"] for link in links}
+
+
+@pytest.mark.xfail(strict=False)
+@pytest.mark.asyncio
+async def test_get_collections_search_offset_1(
+    app_client, load_test_collection, load_test2_collection
+):
+    res = await app_client.get("/_mgmt/health")
+    pgstac_version = res.json()["pgstac"]["pgstac_version"]
+    if tuple(map(int, pgstac_version.split("."))) < (0, 9, 2):
+        pytest.skip("Need PgSTAC > 0.9.2")
+
+    # BUG: pgstac doesn't return a `prev` link when limit is not set
+    # offset=1, should have a `previous` link
+    resp = await app_client.get(
+        "/collections",
+        params={"offset": 1},
+    )
+    cols = resp.json()["collections"]
+    links = resp.json()["links"]
+    assert len(cols) == 1
+    assert cols[0]["id"] == load_test2_collection.id
+    assert len(links) == 3
+    assert {"root", "self", "previous"} == {link["rel"] for link in links}
+    prev_link = list(filter(lambda link: link["rel"] == "previous", links))[0]
+    # offset=0 should not be in the previous link (because it's useless)
+    assert "offset" not in prev_link["href"]

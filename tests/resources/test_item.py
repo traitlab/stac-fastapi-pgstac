@@ -148,7 +148,9 @@ async def test_fetches_valid_item(
     mock_root = pystac.Catalog(
         id="test", description="test desc", href="https://example.com"
     )
-    item = pystac.Item.from_dict(item_dict, preserve_dict=False, root=mock_root)
+    item = pystac.Item.from_dict(
+        item_dict, preserve_dict=False, root=mock_root, migrate=False
+    )
     item.validate()
 
 
@@ -184,6 +186,61 @@ async def test_update_item(
     )
     assert post_self_link is not None and get_self_link is not None
     assert post_self_link["href"] == get_self_link["href"]
+
+
+async def test_patch_item_partialitem(
+    app_client,
+    load_test_collection: Collection,
+    load_test_item: Item,
+):
+    """Test patching an Item with a PartialCollection."""
+    item_id = load_test_item["id"]
+    collection_id = load_test_item["collection"]
+    assert collection_id == load_test_collection["id"]
+    partial = {
+        "id": item_id,
+        "collection": collection_id,
+        "properties": {"gsd": 10},
+    }
+
+    resp = await app_client.patch(
+        f"/collections/{collection_id}/items/{item_id}", json=partial
+    )
+    assert resp.status_code == 200
+
+    resp = await app_client.get(f"/collections/{collection_id}/items/{item_id}")
+    assert resp.status_code == 200
+
+    get_item_json = resp.json()
+    Item.model_validate(get_item_json)
+
+    assert get_item_json["properties"]["gsd"] == 10
+
+
+async def test_patch_item_operations(
+    app_client,
+    load_test_collection: Collection,
+    load_test_item: Item,
+):
+    """Test patching an Item with PatchOperations ."""
+
+    item_id = load_test_item["id"]
+    collection_id = load_test_item["collection"]
+    assert collection_id == load_test_collection["id"]
+    operations = [{"op": "replace", "path": "/properties/gsd", "value": 20}]
+
+    resp = await app_client.patch(
+        f"/collections/{collection_id}/items/{item_id}", json=operations
+    )
+    assert resp.status_code == 200
+
+    resp = await app_client.get(f"/collections/{collection_id}/items/{item_id}")
+    assert resp.status_code == 200
+
+    get_item_json = resp.json()
+    Item.model_validate(get_item_json)
+
+    assert get_item_json["properties"]["gsd"] == 20
 
 
 async def test_update_item_mismatched_collection_id(
@@ -848,6 +905,12 @@ async def test_item_search_post_filter_extension_cql2(
     )
     assert resp.status_code == 201
 
+    # make sure we have 2 items
+    resp = await app_client.post("/search", json={})
+    resp_json = resp.json()
+    assert resp.status_code == 200
+    assert len(resp_json.get("features")) == 2
+
     # EPSG is a JSONB key
     params = {
         "collections": [test_item["collection"]],
@@ -885,6 +948,39 @@ async def test_item_search_post_filter_extension_cql2(
         == test_item["properties"]["proj:epsg"]
     )
 
+    # Test IN operator
+    params = {
+        "collections": [test_item["collection"]],
+        "filter-lang": "cql2-json",
+        "filter": {
+            "op": "in",
+            "args": [
+                {"property": "proj:epsg"},
+                [test_item["properties"]["proj:epsg"]],
+            ],
+        },
+    }
+    resp = await app_client.post("/search", json=params)
+    resp_json = resp.json()
+    assert resp.status_code == 200
+    assert len(resp_json.get("features")) == 1
+
+    params = {
+        "collections": [test_item["collection"]],
+        "filter-lang": "cql2-json",
+        "filter": {
+            "op": "in",
+            "args": [
+                {"property": "proj:epsg"},
+                [test_item["properties"]["proj:epsg"] + 1],
+            ],
+        },
+    }
+    resp = await app_client.post("/search", json=params)
+    resp_json = resp.json()
+    assert resp.status_code == 200
+    assert len(resp_json.get("features")) == 0
+
 
 async def test_item_search_post_filter_extension_cql2_with_query_fails(
     app_client, load_test_data, load_test_collection
@@ -902,7 +998,7 @@ async def test_item_search_post_filter_extension_cql2_with_query_fails(
     )
     assert resp.status_code == 201
 
-    # EPSG is a JSONB key
+    # Cannot use `query` and `filter`
     params = {
         "collections": [test_item["collection"]],
         "filter-lang": "cql2-json",
@@ -1069,6 +1165,13 @@ async def test_field_extension_get(app_client, load_test_data, load_test_collect
         f"/collections/{test_item['collection']}/items", json=test_item
     )
     assert resp.status_code == 201
+
+    params = {"fields": "+properties.proj:epsg,+properties.gsd,+collection"}
+    resp = await app_client.get(
+        f"/collections/{test_item['collection']}/items", params=params
+    )
+    feat_properties = resp.json()["features"][0]["properties"]
+    assert not set(feat_properties) - {"proj:epsg", "gsd", "datetime"}
 
     params = {"fields": "+properties.proj:epsg,+properties.gsd,+collection"}
     resp = await app_client.get("/search", params=params)
@@ -1308,52 +1411,6 @@ async def test_preserves_extra_link(
     assert extra_link[0]["href"] == expected_href
 
 
-async def test_item_search_post_filter_extension_cql_explicitlang(
-    app_client, load_test_data, load_test_collection
-):
-    """Test POST search with JSONB query (cql json filter extension)"""
-    test_item = load_test_data("test_item.json")
-    resp = await app_client.post(
-        f"/collections/{test_item['collection']}/items", json=test_item
-    )
-    assert resp.status_code == 201
-
-    # EPSG is a JSONB key
-    params = {
-        "collections": [test_item["collection"]],
-        "filter-lang": "cql-json",
-        "filter": {
-            "gt": [
-                {"property": "proj:epsg"},
-                test_item["properties"]["proj:epsg"] + 1,
-            ]
-        },
-    }
-    resp = await app_client.post("/search", json=params)
-    resp_json = resp.json()
-
-    assert resp.status_code == 200
-    assert len(resp_json.get("features")) == 0
-
-    params = {
-        "collections": [test_item["collection"]],
-        "filter-lang": "cql-json",
-        "filter": {
-            "eq": [
-                {"property": "proj:epsg"},
-                test_item["properties"]["proj:epsg"],
-            ]
-        },
-    }
-    resp = await app_client.post("/search", json=params)
-    resp_json = resp.json()
-    assert len(resp.json()["features"]) == 1
-    assert (
-        resp_json["features"][0]["properties"]["proj:epsg"]
-        == test_item["properties"]["proj:epsg"]
-    )
-
-
 async def test_item_search_post_filter_extension_cql2_2(
     app_client, load_test_data, load_test_collection
 ):
@@ -1574,26 +1631,6 @@ async def test_get_filter_extension(app_client, load_test_data, load_test_collec
     assert len(fc["features"]) == 1
     assert fc["features"][0]["id"] == search_id
 
-    # CQL-JSON
-    resp = await app_client.get(
-        "/search",
-        params={
-            "filter-lang": "cql-json",
-            "filter": json.dumps(
-                {
-                    "eq": [
-                        {"property": "id"},
-                        search_id,
-                    ],
-                },
-            ),
-        },
-    )
-    assert resp.status_code == 200
-    fc = resp.json()
-    assert len(fc["features"]) == 1
-    assert fc["features"][0]["id"] == search_id
-
     # CQL2-TEXT
     resp = await app_client.get(
         "/search",
@@ -1621,26 +1658,6 @@ async def test_get_filter_extension(app_client, load_test_data, load_test_collec
     assert len(fc["features"]) == 1
     assert fc["features"][0]["id"] == search_id
 
-    # CQL-JSON
-    resp = await app_client.get(
-        f"/collections/{collection_id}/items",
-        params={
-            "filter-lang": "cql-json",
-            "filter": json.dumps(
-                {
-                    "eq": [
-                        {"property": "id"},
-                        search_id,
-                    ],
-                },
-            ),
-        },
-    )
-    assert resp.status_code == 200
-    fc = resp.json()
-    assert len(fc["features"]) == 1
-    assert fc["features"][0]["id"] == search_id
-
     # CQL2-TEXT
     resp = await app_client.get(
         f"/collections/{collection_id}/items",
@@ -1653,3 +1670,127 @@ async def test_get_filter_extension(app_client, load_test_data, load_test_collec
     fc = resp.json()
     assert len(fc["features"]) == 1
     assert fc["features"][0]["id"] == search_id
+
+
+async def test_get_search_link_media(app_client):
+    """Test Search request returned links"""
+    # GET
+    resp = await app_client.get("/search")
+    assert resp.status_code == 200
+    links = resp.json()["links"]
+    assert len(links) == 2
+    get_self_link = next((link for link in links if link["rel"] == "self"), None)
+    assert get_self_link["type"] == "application/geo+json"
+
+    # POST
+    resp = await app_client.post("/search", json={})
+    assert resp.status_code == 200
+    links = resp.json()["links"]
+    assert len(links) == 2
+    get_self_link = next((link for link in links if link["rel"] == "self"), None)
+    assert get_self_link["type"] == "application/geo+json"
+
+
+@pytest.mark.asyncio
+async def test_item_search_freetext(app_client, load_test_data, load_test_collection):
+    res = await app_client.get("/_mgmt/health")
+    pgstac_version = res.json()["pgstac"]["pgstac_version"]
+    if tuple(map(int, pgstac_version.split("."))) < (0, 9, 2):
+        pytest.skip("Need PgSTAC > 0.9.2")
+
+    test_item = load_test_data("test_item.json")
+    resp = await app_client.post(
+        f"/collections/{test_item['collection']}/items", json=test_item
+    )
+    assert resp.status_code == 201
+
+    # free-text
+    resp = await app_client.get(
+        "/search",
+        params={"q": "orthorectified"},
+    )
+    assert resp.json()["numberReturned"] == 1
+    assert resp.json()["features"][0]["id"] == "test-item"
+
+    resp = await app_client.get(
+        "/search",
+        params={"q": "orthorectified,yo"},
+    )
+    assert resp.json()["numberReturned"] == 1
+    assert resp.json()["features"][0]["id"] == "test-item"
+
+    resp = await app_client.get(
+        "/search",
+        params={"q": "yo"},
+    )
+    assert resp.json()["numberReturned"] == 0
+
+
+@pytest.mark.asyncio
+async def test_item_asset_change(app_client, load_test_data):
+    """Check that changing item_assets in collection does
+    not affect existing items if hydration should not occur.
+
+    """
+    # load collection
+    data = load_test_data("test2_collection.json")
+    collection_id = data["id"]
+
+    resp = await app_client.post("/collections", json=data)
+    assert "item_assets" in data
+    assert resp.status_code == 201
+    assert "item_assets" in resp.json()
+
+    # load items
+    test_item = load_test_data("test2_item.json")
+    resp = await app_client.post(f"/collections/{collection_id}/items", json=test_item)
+    assert resp.status_code == 201
+
+    # check list of items
+    resp = await app_client.get(
+        f"/collections/{collection_id}/items", params={"limit": 1}
+    )
+    assert len(resp.json()["features"]) == 1
+    assert resp.status_code == 200
+
+    # NOTE: API or PgSTAC Hydration we should get the same values as original Item
+    assert (
+        test_item["assets"]["red"]["raster:bands"]
+        == resp.json()["features"][0]["assets"]["red"]["raster:bands"]
+    )
+
+    # NOTE: `description` is not in the item body but in the collection's item-assets
+    # because it's not in the original item it won't be hydrated
+    assert not resp.json()["features"][0]["assets"]["qa_pixel"].get("description")
+
+    ###########################################################################
+    # Remove item_assets in collection
+    operations = [{"op": "remove", "path": "/item_assets"}]
+    resp = await app_client.patch(f"/collections/{collection_id}", json=operations)
+    assert resp.status_code == 200
+
+    # Make sure item_assets is not in collection response
+    resp = await app_client.get(f"/collections/{collection_id}")
+    assert resp.status_code == 200
+    assert "item_assets" not in resp.json()
+    ###########################################################################
+
+    resp = await app_client.get(
+        f"/collections/{collection_id}/items", params={"limit": 1}
+    )
+    assert len(resp.json()["features"]) == 1
+    assert resp.status_code == 200
+
+    # NOTE: here we should only get `scale`, `offset` and `spatial_resolution`
+    # because the other values were stripped on ingestion (dehydration is a default in PgSTAC)
+    # scale and offset are no in item-asset and spatial_resolution is different, so the value in the item body is kept
+    assert ["scale", "offset", "spatial_resolution"] == list(
+        resp.json()["features"][0]["assets"]["red"]["raster:bands"][0]
+    )
+
+    # Only run this test for PgSTAC hydratation because `exclude_hydrate_markers=True` by default
+    if not app_client._transport.app.state.settings.use_api_hydrate:
+        # NOTE: `description` is not in the original item but in the collection's item-assets
+        # We get "𒍟※" because PgSTAC set it when ingesting (`description`is item-assets)
+        # because we removed item-assets, pgstac cannot hydrate this field, and thus return "𒍟※"
+        assert resp.json()["features"][0]["assets"]["qa_pixel"]["description"] == "𒍟※"

@@ -1,16 +1,14 @@
 """stac-fastapi utility methods."""
 
-from datetime import datetime
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any, cast
 
-from stac_fastapi.types.rfc3339 import DateTimeType
 from stac_fastapi.types.stac import Item
 
 
 def filter_fields(  # noqa: C901
-    item: Union[Item, Dict[str, Any]],
-    include: Optional[Set[str]] = None,
-    exclude: Optional[Set[str]] = None,
+    item: Item,
+    include: set[str] | None = None,
+    exclude: set[str] | None = None,
 ) -> Item:
     """Preserve and remove fields as indicated by the fields extension include/exclude sets.
 
@@ -23,13 +21,11 @@ def filter_fields(  # noqa: C901
         return item
 
     # Build a shallow copy of included fields on an item, or a sub-tree of an item
-    def include_fields(
-        source: Dict[str, Any], fields: Optional[Set[str]]
-    ) -> Dict[str, Any]:
+    def include_fields(source: dict[str, Any], fields: set[str] | None) -> dict[str, Any]:
         if not fields:
             return source
 
-        clean_item: Dict[str, Any] = {}
+        clean_item: dict[str, Any] = {}
         for key_path in fields or []:
             key_path_parts = key_path.split(".")
             key_root = key_path_parts[0]
@@ -60,11 +56,12 @@ def filter_fields(  # noqa: C901
                 # The key, or root key of a multi-part key, is not present in the item,
                 # so it is ignored
                 pass
+
         return clean_item
 
     # For an item built up for included fields, remove excluded fields. This
     # modifies `source` in place.
-    def exclude_fields(source: Dict[str, Any], fields: Optional[Set[str]]) -> None:
+    def exclude_fields(source: dict[str, Any], fields: set[str] | None) -> None:
         for key_path in fields or []:
             key_path_part = key_path.split(".")
             key_root = key_path_part[0]
@@ -84,22 +81,19 @@ def filter_fields(  # noqa: C901
                 # The key to remove does not exist on the source, so it is ignored
                 pass
 
-    # Coalesce incoming type to a dict
-    item = dict(item)
-
-    clean_item = include_fields(item, include)
+    clean_item = include_fields(dict(item), include)
 
     # If, after including all the specified fields, there are no included properties,
     # return just id and collection.
     if not clean_item:
-        return Item({"id": item["id"], "collection": item["collection"]})
+        return Item({"id": item["id"], "collection": item["collection"]})  # type: ignore
 
     exclude_fields(clean_item, exclude)
 
-    return Item(**clean_item)
+    return cast(Item, clean_item)
 
 
-def dict_deep_update(merge_to: Dict[str, Any], merge_from: Dict[str, Any]) -> None:
+def dict_deep_update(merge_to: dict[str, Any], merge_from: dict[str, Any]) -> None:
     """Perform a deep update of two dicts.
 
     merge_to is updated in-place with the values from merge_from.
@@ -114,34 +108,3 @@ def dict_deep_update(merge_to: Dict[str, Any], merge_from: Dict[str, Any]) -> No
             dict_deep_update(merge_to[k], merge_from[k])
         else:
             merge_to[k] = v
-
-
-def format_datetime_range(dt_range: Union[DateTimeType, str]) -> str:
-    """
-    Convert a datetime object or a tuple of datetime objects to a formatted string for datetime ranges.
-
-    Args:
-        dt_range (DateTimeType): The date interval,
-            which might be a single datetime or a tuple with one or two datetimes.
-
-    Returns:
-        str: A formatted string like 'YYYY-MM-DDTHH:MM:SSZ/..', 'YYYY-MM-DDTHH:MM:SSZ', or the original string input.
-    """
-    # Handle a single datetime object
-    if isinstance(dt_range, datetime):
-        return dt_range.isoformat().replace("+00:00", "Z")
-
-    # Handle a tuple containing datetime objects or None
-    elif isinstance(dt_range, tuple):
-        start, end = dt_range
-
-        # Convert start datetime to string if not None, otherwise use ".."
-        start_str = start.isoformat().replace("+00:00", "Z") if start else ".."
-
-        # Convert end datetime to string if not None, otherwise use ".."
-        end_str = end.isoformat().replace("+00:00", "Z") if end else ".."
-
-        return f"{start_str}/{end_str}"
-
-    # Return input as-is if it's not any expected type (fallback)
-    return dt_range

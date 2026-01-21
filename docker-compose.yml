@@ -1,6 +1,5 @@
 services:
   app:
-    container_name: stac-fastapi-pgstac
     image: stac-utils/stac-fastapi-pgstac
     build: .
     environment:
@@ -8,12 +7,11 @@ services:
       - APP_PORT=8082
       - RELOAD=true
       - ENVIRONMENT=local
-      - POSTGRES_USER=username
-      - POSTGRES_PASS=password
-      - POSTGRES_DBNAME=postgis
-      - POSTGRES_HOST_READER=database
-      - POSTGRES_HOST_WRITER=database
-      - POSTGRES_PORT=5432
+      - PGUSER=username
+      - PGPASSWORD=password
+      - PGDATABASE=postgis
+      - PGHOST=database
+      - PGPORT=5432
       - WEB_CONCURRENCY=10
       - VSI_CACHE=TRUE
       - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
@@ -22,16 +20,18 @@ services:
       - DB_MAX_CONN_SIZE=1
       - USE_API_HYDRATE=${USE_API_HYDRATE:-false}
       - UVICORN_ROOT_PATH=/stac-fastapi-pgstac/api/v1/pgstac
+      - ENABLE_TRANSACTIONS_EXTENSIONS=TRUE
     ports:
       - "8082:8082"
-    volumes:
-      - .:/app
     depends_on:
       - database
-    command: bash -c "./scripts/wait-for-it.sh database:5432 && python -m stac_fastapi.pgstac.app"
+    command: bash -c "scripts/wait-for-it.sh database:5432 && python -m stac_fastapi.pgstac.app"
+    develop:
+      watch:
+        - action: rebuild
+          path: ./stac_fastapi/pgstac
 
   tests:
-    container_name: stac-fastapi-pgstac-test
     image: stac-utils/stac-fastapi-pgstac-test
     build:
       context: .
@@ -44,8 +44,7 @@ services:
     command: bash -c "python -m pytest -s -vv"
 
   database:
-    container_name: stac-db
-    image: ghcr.io/stac-utils/pgstac:v0.9.1
+    image: ghcr.io/stac-utils/pgstac:v0.9.8
     environment:
       - POSTGRES_USER=username
       - POSTGRES_PASSWORD=password
@@ -63,17 +62,37 @@ services:
     environment:
       - ENVIRONMENT=development
     volumes:
-      - ./stac_fastapi:/app/stac_fastapi
-      - ./scripts:/app/scripts
+      - ./testdata:/tmp/testdata      
+      - ./scripts:/tmp/scripts
     command: >
       /bin/sh -c "
-        ./scripts/wait-for-it.sh -t 60 app:8082 &&
+        scripts/wait-for-it.sh -t 60 app:8082 &&
+        python -m pip install pip -U &&
         python -m pip install requests &&
-        python /app/scripts/ingest_joplin.py http://app:8082
+        python /tmp/scripts/ingest_joplin.py http://app:8082
         "
     depends_on:
       - database
       - app
+
+  nginx:
+    image: nginx
+    ports:
+      - ${STAC_FASTAPI_NGINX_PORT:-8080}:80
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - app-nginx
+    command: [ "nginx-debug", "-g", "daemon off;" ]
+
+  app-nginx:
+    extends:
+      service: app
+    command: >
+      bash -c "
+      scripts/wait-for-it.sh database:5432 && 
+      uvicorn stac_fastapi.pgstac.app:app --host 0.0.0.0 --port 8082 --proxy-headers --forwarded-allow-ips=* --root-path=/api/v1/pgstac
+      "
 
 networks:
   default:

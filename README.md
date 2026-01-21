@@ -27,6 +27,7 @@ PgSTAC stores all collection and item records as jsonb fields exactly as they co
 |                            --|          --|
 |                          2.5 | >=0.7,<0.8 |
 |                          3.0 | >=0.8,<0.9 |
+|                        >=4.0 | >=0.8,<0.10|
 
 ## Usage
 
@@ -42,7 +43,12 @@ For more than millions of records it is recommended to either set a low connecti
 
 ### Hydration
 
-To configure **stac-fastapi-pgstac** to [hydrate search result items in the API](https://stac-utils.github.io/pgstac/pgstac/#runtime-configurations), set the `USE_API_HYDRATE` environment variable to `true` or explicitly set the option in the PGStac Settings object.
+To configure **stac-fastapi-pgstac** to [hydrate search result items at the API level](https://stac-utils.github.io/pgstac/pgstac/#runtime-configurations), set the `USE_API_HYDRATE` environment variable to `true`. If `false` (default) the hydration will be done in the database.
+
+| use_api_hydrate (API) | nohydrate (PgSTAC) | Hydration |
+|                  --- |                --- |       --- |
+|                False |              False |    PgSTAC |
+|                 True |               True |       API |
 
 ### Migrations
 
@@ -53,39 +59,31 @@ To use:
 pypgstac migrate
 ```
 
+## Development
+
+Install the packages in editable mode:
+
+We recommand using [`uv`](https://docs.astral.sh/uv) as project manager for development.
+
+See https://docs.astral.sh/uv/getting-started/installation/ for installation 
+
+```shell
+uv sync --dev
+```
+
+To run the tests:
+
+```shell
+uv run pytest
+```
+
 ## Contributing
 
-See [CONTRIBUTING](https://github.com/stac-utils/stac-fastapi-pgstac/blob/main/CONTRIBUTING.md) for detailed contribution instructions.
+See [CONTRIBUTING](./contributing.md) for detailed contribution instructions.
 
-To install:
+## Releasing
 
-```shell
-git clone https://github.com/stac-utils/stac-fastapi-pgstac
-cd stac-fastapi-pgstac
-python -m pip install -e ".[dev,server,docs]"
-```
-
-To test:
-
-```shell
-make test
-```
-
-Use Github [Pull Requests](https://github.com/stac-utils/stac-fastapi-pgstac/pulls) to provide new features or to request review of draft code, and use [Issues](https://github.com/stac-utils/stac-fastapi-pgstac/issues) to report bugs or request new features.
-
-### Documentation
-
-To build the docs:
-
-```shell
-make docs
-```
-
-Then, serve the docs via a local HTTP server:
-
-```shell
-mkdocs serve
-```
+See [RELEASING.md](./releasing.md).
 
 ## History
 

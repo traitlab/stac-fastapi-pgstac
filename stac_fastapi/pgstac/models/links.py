@@ -1,7 +1,7 @@
 """link helpers."""
 
-from typing import Any, Dict, List, Optional
-from urllib.parse import ParseResult, parse_qs, unquote, urlencode, urljoin, urlparse
+from typing import Any
+from urllib.parse import ParseResult, parse_qs, urlencode, urljoin, urlparse
 
 import attr
 from stac_fastapi.types.requests import get_base_url
@@ -11,20 +11,20 @@ from starlette.requests import Request
 
 # These can be inferred from the item/collection so they aren't included in the database
 # Instead they are dynamically generated when querying the database using the classes defined below
-INFERRED_LINK_RELS = ["self", "item", "parent", "collection", "root"]
+INFERRED_LINK_RELS = ["self", "item", "parent", "collection", "root", "items"]
 
 
-def filter_links(links: List[Dict]) -> List[Dict]:
+def filter_links(links: list[dict]) -> list[dict]:
     """Remove inferred links."""
     return [link for link in links if link["rel"] not in INFERRED_LINK_RELS]
 
 
-def merge_params(url: str, newparams: Dict) -> str:
+def merge_params(url: str, newparams: dict) -> str:
     """Merge url parameters."""
     u = urlparse(url)
     params = parse_qs(u.query)
     params.update(newparams)
-    param_string = unquote(urlencode(params, True))
+    param_string = urlencode(params, True)
 
     href = ParseResult(
         scheme=u.scheme,
@@ -42,6 +42,7 @@ class BaseLinks:
     """Create inferred links common to collections and items."""
 
     request: Request = attr.ib()
+    _body: dict = attr.ib(init=False, factory=dict)
 
     @property
     def base_url(self):
@@ -51,13 +52,31 @@ class BaseLinks:
     @property
     def url(self):
         """Get the current request url."""
-        return str(self.request.url)
+        base_url = self.request.base_url
+        path = self.request.url.path
+
+        # root path can be set in the request scope in two different ways:
+        # - by uvicorn when running with --root-path
+        # - by FastAPI when running with FastAPI(root_path="...")
+        #
+        # We need to remove the root path prefix from the path before
+        # joining the base_url and path to get the full url to avoid
+        # having root_path twice in the url
+        if root_path := self.request.scope.get("root_path"):
+            if path.startswith(root_path):
+                path = path[len(root_path) :]
+
+        url = urljoin(str(base_url), path.lstrip("/"))
+        if qs := self.request.url.query:
+            url += f"?{qs}"
+
+        return url
 
     def resolve(self, url):
         """Resolve url to the current request url."""
         return urljoin(str(self.base_url), str(url))
 
-    def link_self(self) -> Dict:
+    def link_self(self) -> dict:
         """Return the self link."""
         return {
             "rel": Relations.self.value,
@@ -65,7 +84,7 @@ class BaseLinks:
             "href": self.url,
         }
 
-    def link_root(self) -> Dict:
+    def link_root(self) -> dict:
         """Return the catalog root."""
         return {
             "rel": Relations.root.value,
@@ -73,7 +92,7 @@ class BaseLinks:
             "href": self.base_url,
         }
 
-    def create_links(self) -> List[Dict[str, Any]]:
+    def create_links(self) -> list[dict[str, Any]]:
         """Return all inferred links."""
         links = []
         for name in dir(self):
@@ -84,8 +103,8 @@ class BaseLinks:
         return links
 
     async def get_links(
-        self, extra_links: Optional[List[Dict[str, Any]]] = None
-    ) -> List[Dict[str, Any]]:
+        self, extra_links: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
         """
         Generate all the links.
 
@@ -94,7 +113,8 @@ class BaseLinks:
         """
         # TODO: Pass request.json() into function so this doesn't need to be coroutine
         if self.request.method == "POST":
-            self.request.postbody = await self.request.json()
+            self._body = await self.request.json()
+
         # join passed in links with generated links
         # and update relative paths
         links = self.create_links()
@@ -121,10 +141,10 @@ class BaseLinks:
 class PagingLinks(BaseLinks):
     """Create links for paging."""
 
-    next: Optional[str] = attr.ib(kw_only=True, default=None)
-    prev: Optional[str] = attr.ib(kw_only=True, default=None)
+    next: str | None = attr.ib(kw_only=True, default=None)
+    prev: str | None = attr.ib(kw_only=True, default=None)
 
-    def link_next(self) -> Optional[Dict[str, Any]]:
+    def link_next(self) -> dict[str, Any] | None:
         """Create link for next page."""
         if self.next is not None:
             method = self.request.method
@@ -140,16 +160,16 @@ class PagingLinks(BaseLinks):
 
             if method == "POST":
                 return {
-                    "rel": Relations.next,
-                    "type": MimeTypes.geojson,
+                    "rel": Relations.next.value,
+                    "type": MimeTypes.geojson.value,
                     "method": method,
-                    "href": f"{self.request.url}",
-                    "body": {**self.request.postbody, "token": f"next:{self.next}"},
+                    "href": self.url,
+                    "body": {**self._body, "token": f"next:{self.next}"},
                 }
 
         return None
 
-    def link_prev(self) -> Optional[Dict[str, Any]]:
+    def link_prev(self) -> dict[str, Any] | None:
         """Create link for previous page."""
         if self.prev is not None:
             method = self.request.method
@@ -164,12 +184,61 @@ class PagingLinks(BaseLinks):
 
             if method == "POST":
                 return {
-                    "rel": Relations.previous,
-                    "type": MimeTypes.geojson,
+                    "rel": Relations.previous.value,
+                    "type": MimeTypes.geojson.value,
                     "method": method,
-                    "href": f"{self.request.url}",
-                    "body": {**self.request.postbody, "token": f"prev:{self.prev}"},
+                    "href": self.url,
+                    "body": {**self._body, "token": f"prev:{self.prev}"},
                 }
+        return None
+
+
+@attr.s
+class CollectionSearchPagingLinks(BaseLinks):
+    next: dict[str, Any] | None = attr.ib(kw_only=True, default=None)
+    prev: dict[str, Any] | None = attr.ib(kw_only=True, default=None)
+
+    def link_next(self) -> dict[str, Any] | None:
+        """Create link for next page."""
+        if self.next is not None:
+            method = self.request.method
+            if method == "GET":
+                # if offset is equal to default value (0), drop it
+                if self.next["body"].get("offset", -1) == 0:
+                    _ = self.next["body"].pop("offset")
+
+                href = merge_params(self.url, self.next["body"])
+
+                # if next link is equal to this link, skip it
+                if href == self.url:
+                    return None
+
+                return {
+                    "rel": Relations.next.value,
+                    "type": MimeTypes.geojson.value,
+                    "method": method,
+                    "href": href,
+                }
+
+        return None
+
+    def link_prev(self):
+        if self.prev is not None:
+            method = self.request.method
+            if method == "GET":
+                href = merge_params(self.url, self.prev["body"])
+
+                # if prev link is equal to this link, skip it
+                if href == self.url:
+                    return None
+
+                return {
+                    "rel": Relations.previous.value,
+                    "type": MimeTypes.geojson.value,
+                    "method": method,
+                    "href": href,
+                }
+
         return None
 
 
@@ -179,7 +248,7 @@ class CollectionLinksBase(BaseLinks):
 
     collection_id: str = attr.ib()
 
-    def collection_link(self, rel: str = Relations.collection.value) -> Dict:
+    def collection_link(self, rel: str = Relations.collection.value) -> dict:
         """Create a link to a collection."""
         return {
             "rel": rel,
@@ -192,11 +261,11 @@ class CollectionLinksBase(BaseLinks):
 class CollectionLinks(CollectionLinksBase):
     """Create inferred links specific to collections."""
 
-    def link_self(self) -> Dict:
+    def link_self(self) -> dict:
         """Return the self link."""
         return self.collection_link(rel=Relations.self.value)
 
-    def link_parent(self) -> Dict:
+    def link_parent(self) -> dict:
         """Create the `parent` link."""
         return {
             "rel": Relations.parent.value,
@@ -204,7 +273,7 @@ class CollectionLinks(CollectionLinksBase):
             "href": self.base_url,
         }
 
-    def link_items(self) -> Dict:
+    def link_items(self) -> dict:
         """Create the `item` link."""
         return {
             "rel": "items",
@@ -214,10 +283,23 @@ class CollectionLinks(CollectionLinksBase):
 
 
 @attr.s
+class SearchLinks(BaseLinks):
+    """Create inferred links specific to collections."""
+
+    def link_self(self) -> dict:
+        """Return the self link."""
+        return {
+            "rel": Relations.self.value,
+            "type": MimeTypes.geojson.value,
+            "href": self.resolve("search"),
+        }
+
+
+@attr.s
 class ItemCollectionLinks(CollectionLinksBase):
     """Create inferred links specific to collections."""
 
-    def link_self(self) -> Dict:
+    def link_self(self) -> dict:
         """Return the self link."""
         return {
             "rel": Relations.self.value,
@@ -225,11 +307,11 @@ class ItemCollectionLinks(CollectionLinksBase):
             "href": self.resolve(f"collections/{self.collection_id}/items"),
         }
 
-    def link_parent(self) -> Dict:
+    def link_parent(self) -> dict:
         """Create the `parent` link."""
         return self.collection_link(rel=Relations.parent.value)
 
-    def link_collection(self) -> Dict:
+    def link_collection(self) -> dict:
         """Create the `collection` link."""
         return self.collection_link()
 
@@ -240,7 +322,7 @@ class ItemLinks(CollectionLinksBase):
 
     item_id: str = attr.ib()
 
-    def link_self(self) -> Dict:
+    def link_self(self) -> dict:
         """Create the self link."""
         return {
             "rel": Relations.self.value,
@@ -250,10 +332,10 @@ class ItemLinks(CollectionLinksBase):
             ),
         }
 
-    def link_parent(self) -> Dict:
+    def link_parent(self) -> dict:
         """Create the `parent` link."""
         return self.collection_link(rel=Relations.parent.value)
 
-    def link_collection(self) -> Dict:
+    def link_collection(self) -> dict:
         """Create the `collection` link."""
         return self.collection_link()
