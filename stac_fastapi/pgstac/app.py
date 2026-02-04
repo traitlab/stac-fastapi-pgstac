@@ -202,7 +202,7 @@ api = StacApi(
 
 Each STAC collection corresponds to a single drone mission. All missions and metadata are findable, but most products are private and require password access.
 
-The catalog can be accessed via the QGIS STAC Browser plugin with this link: [http://206.12.102.82/stac-fastapi-pgstac/api/v1/pgstac/#/](http://206.12.102.82/stac-fastapi-pgstac/api/v1/pgstac/#/)
+The catalog can be accessed via the QGIS STAC Browser plugin with this link: [https://www.kanopia.org/stac-fastapi-pgstac/api/v1/pgstac/#/](https://www.kanopia.org/stac-fastapi-pgstac/api/v1/pgstac/#/)
 
 Please contact us ([info@lefo.ca](mailto:info@lefo.ca)) for any questions and data access requests.""",
     title="LEFO STAC Collections",    
