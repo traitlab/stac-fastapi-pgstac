@@ -198,14 +198,8 @@ api = StacApi(
             allow_headers=settings.cors_headers,
         ),
     ],
-    description="""This catalog stores all drone products from LEFO ([https://lefo.ca](https://lefo.ca)) and close collaborators.
-
-Each STAC collection corresponds to a single drone mission. All missions and metadata are findable, but most products are private and require password access.
-
-The catalog can be accessed via the QGIS STAC Browser plugin with this link: [https://www.kanopia.org/stac-fastapi-pgstac/api/v1/pgstac/#/](https://www.kanopia.org/stac-fastapi-pgstac/api/v1/pgstac/#/)
-
-Please contact us ([info@lefo.ca](mailto:info@lefo.ca)) for any questions and data access requests.""",
-    title="LEFO STAC Collections",    
+    description=settings.stac_fastapi_description,
+    title=settings.stac_fastapi_title,
     health_check=health_check,  # type: ignore [arg-type]
 )
 app = api.app

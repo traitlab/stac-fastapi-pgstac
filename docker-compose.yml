@@ -2,6 +2,7 @@ services:
   app:
     image: stac-utils/stac-fastapi-pgstac
     build: .
+    env_file: .env
     environment:
       - APP_HOST=0.0.0.0
       - APP_PORT=8082
@@ -21,6 +22,10 @@ services:
       - USE_API_HYDRATE=${USE_API_HYDRATE:-false}
       - UVICORN_ROOT_PATH=/stac-fastapi-pgstac/api/v1/pgstac
       - ENABLE_TRANSACTIONS_EXTENSIONS=TRUE
+      # Catalog metadata (shown in landing page and clients like STAC Browser).
+      # Override via .env or: STAC_FASTAPI_TITLE=... STAC_FASTAPI_DESCRIPTION=...
+      - STAC_FASTAPI_TITLE=${STAC_FASTAPI_TITLE:-STAC Catalog}
+      - STAC_FASTAPI_DESCRIPTION=${STAC_FASTAPI_DESCRIPTION:-Default catalog description. Customize by setting STAC_FASTAPI_TITLE and STAC_FASTAPI_DESCRIPTION in your .env file or environment variables. Refer to https://github.com/traitlab/stac-fastapi-pgstac/blob/vlf-dev/docker-compose.yml.}
     ports:
       - "8082:8082"
     depends_on:

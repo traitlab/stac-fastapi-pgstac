@@ -1,0 +1,3 @@
+# STAC API metadata (landing page title and description)
+STAC_FASTAPI_TITLE=LEFO STAC Collections
+STAC_FASTAPI_DESCRIPTION="This catalog stores all drone products from LEFO ([https://lefo.ca](https://lefo.ca)) and close collaborators.\n\nEach STAC collection corresponds to a single drone mission. All missions and metadata are findable, but most products are private and require password access.\n\nThe catalog can be accessed via the QGIS STAC Browser plugin with this link: [https://www.kanopia.org/stac-fastapi-pgstac/api/v1/pgstac/#/](https://www.kanopia.org/stac-fastapi-pgstac/api/v1/pgstac/#/)\n\nPlease contact us ([info@lefo.ca](mailto:info@lefo.ca)) for any questions and data access requests."
