@@ -7,7 +7,7 @@ from types import DynamicClassAttribute
 from typing import Any
 
 from pydantic import BaseModel
-from stac_fastapi.extensions.core.query import QueryExtension as QueryExtensionBase
+from stac_fastapi.extensions.query import QueryExtension as QueryExtensionBase
 from stac_pydantic.utils import AutoValueEnum
 
 

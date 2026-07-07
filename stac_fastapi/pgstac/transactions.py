@@ -9,13 +9,13 @@ import jsonpatch
 from buildpg import render
 from fastapi import HTTPException, Request
 from json_merge_patch import merge
-from stac_fastapi.extensions.core.transaction import AsyncBaseTransactionsClient
-from stac_fastapi.extensions.core.transaction.request import (
+from stac_fastapi.extensions.transaction import AsyncBaseTransactionsClient
+from stac_fastapi.extensions.transaction.request import (
     PartialCollection,
     PartialItem,
     PatchOperation,
 )
-from stac_fastapi.extensions.third_party.bulk_transactions import (
+from stac_fastapi.extensions.bulk_transactions import (
     AsyncBaseBulkTransactionsClient,
     BulkTransactionMethod,
     Items,
