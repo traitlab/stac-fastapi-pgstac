@@ -60,6 +60,8 @@ services:
     ports:
       - "5439:5432"
     command: postgres -N 500
+    volumes:
+      - pgstac-data:/var/lib/postgresql/data
 
   # Load joplin demo dataset into the PGStac Application
   loadjoplin:
@@ -98,6 +100,9 @@ services:
       scripts/wait-for-it.sh database:5432 && 
       uvicorn stac_fastapi.pgstac.app:app --host 0.0.0.0 --port 8082 --proxy-headers --forwarded-allow-ips=* --root-path=/api/v1/pgstac
       "
+
+volumes:
+  pgstac-data:
 
 networks:
   default:
