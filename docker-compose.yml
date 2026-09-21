@@ -30,7 +30,15 @@ services:
       - "8082:8082"
     depends_on:
       - database
-    command: bash -c "scripts/wait-for-it.sh database:5432 && python -m stac_fastapi.pgstac.app"
+    # wait-for-it.sh only checks that Postgres's TCP port is open, which
+    # happens well before Postgres has finished its own internal startup
+    # sequence - asyncpg would then hit "the database system is starting up"
+    # (CannotConnectNowError) and the app's lifespan would crash, leaving a
+    # container that docker still reports as "Up" (the bash wrapper survives)
+    # but that never actually serves traffic (502 from anything proxying to
+    # it). The fixed sleep gives Postgres's real startup time to finish
+    # before the TCP check + connection attempt happen at all.
+    command: bash -c "sleep 45 && scripts/wait-for-it.sh database:5432 && python -m stac_fastapi.pgstac.app"
     develop:
       watch:
         - action: rebuild
@@ -97,7 +105,8 @@ services:
       service: app
     command: >
       bash -c "
-      scripts/wait-for-it.sh database:5432 && 
+      sleep 45 &&
+      scripts/wait-for-it.sh database:5432 &&
       uvicorn stac_fastapi.pgstac.app:app --host 0.0.0.0 --port 8082 --proxy-headers --forwarded-allow-ips=* --root-path=/api/v1/pgstac
       "
 
